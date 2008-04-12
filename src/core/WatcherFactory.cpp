@@ -14,6 +14,7 @@
 #include <QPluginLoader>
 #include <QDir>
 #include <QFileInfo>
+#include <QMutex>
 
 #include "FileWatcher.h"
 
@@ -30,6 +31,7 @@ WatcherFactory::~WatcherFactory()
 
 WatcherFactory * WatcherFactory::getInstance(const QString & searchPath)
 {
+	static QMutex instanceLock;
 	QMutexLocker locker(&instanceLock);
 	if (!instance)
 	{
