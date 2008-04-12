@@ -14,7 +14,6 @@
 #include <QList>
 #include <QPointer>
 #include <QString>
-#include <QMutex>
 
 class FileWatcher;
 
@@ -31,7 +30,6 @@ protected:
 
 private:
 	static WatcherFactory * instance;
-	static QMutex instanceLock;
 
 	QList<QPointer<FileWatcher> > createdWatchers;
 };
