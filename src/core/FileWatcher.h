@@ -16,6 +16,10 @@
 #include <QList>
 #include <QMutex>
 
+/**
+ * OS & platform agnostic class that abstracts file watches.  This is meant to be the
+ * interface exposed by plugins providing the implementation.
+ */
 class FileWatcher : public QThread
 {
 	Q_OBJECT
@@ -27,8 +31,13 @@ public:
 
 public slots:
 	/**
-	* @returns Whether or not the watch was added.
-	*/
+	 * This should actually not be pure virtual.  If the native implementation doesn't support
+	 * recursive watches, we should have code here that mimics that functionality.
+	 *
+	 * @param path The path to watch
+	 * @param recursive Whether or not the watch should be recursive.
+	 * @return Whether or not the watch was added.
+	 */
 	virtual bool addWatch(const QString & path, bool recursive) = 0;
 	
 	/**
