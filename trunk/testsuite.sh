@@ -10,10 +10,12 @@ BIN_DIR=bin
 
 cleanup_old_tests
 
-export LD_LIBRARY_PATH=$BIN_DIR
+cd "$BIN_DIR"
+
+export LD_LIBRARY_PATH=.
 
 for test in $TESTS; do
-	test_path=$BIN_DIR/$test
+	test_path=./$test
 	echo "Running $test_path"
 	$test_path
 done
