@@ -1,9 +1,3 @@
-PROJECT = core_test
-TEMPLATE = app
+TEMPLATE = subdirs
 
-include(../global.pri)
-
-SOURCES += stub.cpp
-LIBS += -lfnotify
-
-DEPENDPATH += ../core
+SUBDIRS += stub smoke_test functionality_test
