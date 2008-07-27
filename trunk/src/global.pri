@@ -1,7 +1,25 @@
+DEBUG_ON = yes
+
+contains(DEBUG_ON, yes) {
+	CONFIG += debug
+	CONFIG -= release
+} else {
+	CONFIG -= debug
+	CONFIG += release
+}
+
 win32 {
 	BASE=$$system(cd)
 } else {
 	BASE=$$system(pwd)
+}
+
+release {
+	DEFINES -= _DEBUG
+	DEFINES += NDEBUG
+} else {
+	DEFINES += _DEBUG
+	DEFINES -= NDEBUG
 }
 
 DESTDIR = $$BASE/../bin

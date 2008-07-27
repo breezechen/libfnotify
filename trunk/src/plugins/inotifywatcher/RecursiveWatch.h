@@ -14,6 +14,9 @@
 #include <QList>
 #include <QString>
 
+/**
+ * A tree representing the watches currently being held.
+ */
 class RecursiveWatch
 {
 public:

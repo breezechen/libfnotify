@@ -13,6 +13,29 @@
 
 #include <QMutexLocker>
 #include <QTimer>
+#include <QtDebug>
+#include <QStringList>
+#include <QDir>
+
+static QString normalizePath(const QString& path)
+{
+	QString normalizedPath = path;
+	if (normalizedPath.endsWith(QDir::separator()))
+	{
+		normalizedPath = normalizedPath.left(normalizedPath.length() - 1);
+	}
+	else
+	{
+		Q_ASSERT(normalizedPath.at(normalizedPath.length() - 1) != QDir::separator());
+		if (normalizedPath.length() > 2)
+		Q_ASSERT(normalizedPath.at(normalizedPath.length() - 2) != QDir::separator());
+	}
+#ifdef WIN32
+	normalizedPath = normalizedPath.toLower();
+#endif /* WIN32 */
+	qDebug() << "Normalized " << path << " to " << normalizedPath;
+	return normalizedPath;
+}
 
 FileWatcher::FileWatcher()
 {
@@ -37,28 +60,44 @@ void FileWatcher::selfDestroyListener()
 
 bool FileWatcher::hasWatch(const QString & path) const
 {
-	return watches.contains(path);
+	return watches.contains(normalizePath(path));
 }
 
 void FileWatcher::addWatchListener(const QString & path)
 {
-	QMutexLocker watcher(&watchesLock);
-	if (watches.contains(path))
+	if (path.isEmpty())
+	{
+		// ignore empty paths
+		Q_ASSERT(false);
 		return;
-	watches += path;
+	}
+	QMutexLocker watcher(&watchesLock);
+	QString normalizedPath = normalizePath(path);
+	if (!watches.contains(normalizedPath))
+	{
+		watches += normalizedPath;
+	}
+	Q_ASSERT(hasWatch(normalizedPath));
 }
 
 void FileWatcher::removeWatchListener(const QString & path)
 {
+	if (path.isEmpty())
+	{
+		// ignore empty paths
+		Q_ASSERT(false);
+		return;
+	}
 	QMutexLocker watcher(&watchesLock);
-	int numRemoved = watches.removeAll(path);
+	Q_ASSERT(hasWatch(path));
+	QString normalizedPath = normalizePath(path);
+	qDebug() << "Told watch removed: " << normalizedPath;
+	int numRemoved = watches.removeAll(normalizedPath);
 	Q_ASSERT(numRemoved == 1);
+	Q_ASSERT(!hasWatch(normalizedPath));
 }
 
 void FileWatcher::run()
 {
-	QTimer doPoll;
-	doPoll.start(0);
-	connect(&doPoll, SIGNAL(timeout()), this, SLOT(poll()));
-	exec();
+	poll();
 }

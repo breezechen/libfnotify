@@ -14,17 +14,88 @@
 #include <QFileInfo>
 #include <QDir>
 #include <QMutexLocker>
+#include <QCoreApplication>
+#include <QtDebug>
 
 #include <sys/inotify.h>
 #include <sys/ioctl.h>
 #include <string.h>
 #include <errno.h>
 
+/**
+ * The maximum amount of times we can fail to poll before giving up.
+ * I'm setting this low on purpose, because I'm assuming that such errors are extremely
+ * uncommon, and any failures will probably mean that they aren't recoverable
+ *
+ * An error is considered if the polling fails or if it succeeds but gives us too few
+ * bytes to read for a proper inotify event.
+ */
 #ifndef MAX_POLL_ERRORS
 #define MAX_POLL_ERRORS 3
 #endif /* MAX_POLL_ERRORS */
 
+/**
+ * Determines whether or not a given bit was set in a number.
+ * @NOTE: This is not a safe macro - it assumes that the bit number is within the boundaries of the bis
+ * number is composed of.  However, in theory, a good compiler should warn you if you made a mistake, if bit is
+ * a literal.
+ */
 #define BIT_SET(number, bit) ( ( (number) & (bit) ) != 0 )
+
+/**
+ * Returns the name of the file within the directory.
+ */
+static QString getChildName(struct inotify_event * event)
+{
+	QString result = QString::fromUtf8(event->name);
+
+	// for some reason inotify sometimes gives us a path names that
+	// have an ASCII ETX at the end.
+	while (result.length() && result.endsWith(QChar(QLatin1Char(3))))
+	{
+		result = result.left(result.length() - 1);
+	}
+	return result;
+}
+
+#ifdef _DEBUG
+/**
+ * Parses the data within an inotify event into human-friendly text.
+ */
+static QStringList eventsToString(struct inotify_event* event)
+{
+	static uint32_t masks [] = {
+		IN_CREATE, IN_DELETE, IN_DELETE_SELF, 
+		IN_MOVE_SELF, IN_MOVE, IN_MODIFY, IN_ACCESS,
+		IN_ATTRIB, IN_OPEN, IN_CLOSE,
+		IN_Q_OVERFLOW, IN_IGNORED, IN_UNMOUNT
+	};
+
+	static const char* mask_names [] = {
+		"Created", "Deleted", "Deleted self", "Moved self", "Moved", "Modified",
+		"Accessed", "Opened", "Closed", "Event overflow", "Ignored", "Unmounted"
+	};
+
+	static const size_t NUM_MASKS = sizeof(masks) / sizeof(uint32_t);
+
+	QStringList result;
+	result += "Inotify event (" + QString::number(event->mask) + ") for " + getChildName(event) + ": ";
+
+	QString separator("");
+
+	for (size_t i = 0; i < NUM_MASKS; ++i)
+	{
+		if (BIT_SET(event->mask, masks[i]))
+		{
+			result += separator;
+			result += mask_names[i];
+			separator = ", ";
+		}
+	}
+
+	return result;
+}
+#endif
 
 LinuxWatcher::LinuxWatcher() : inotifyHandle(INVALID_HANDLE), running(false)
 {
@@ -43,11 +114,9 @@ LinuxWatcher::LinuxWatcher() : inotifyHandle(INVALID_HANDLE), running(false)
 
 LinuxWatcher::~LinuxWatcher()
 {
-	Q_ASSERT(running == false);
+	stopPolling();
 	if (running)
 	{
-		stopPolling();
-
 		setTerminationEnabled(true);
 		wait(500);
 		terminate();
@@ -58,7 +127,7 @@ LinuxWatcher::~LinuxWatcher()
 
 QString LinuxWatcher::getName(struct inotify_event * event)
 {
-	return QString::fromUtf8(event->name);
+	return getChildName(event);
 }
 
 void LinuxWatcher::poll()
@@ -72,17 +141,18 @@ void LinuxWatcher::poll()
 
 	while(errorCnt < MAX_POLL_ERRORS && running)
 	{
+		QCoreApplication::sendPostedEvents();
 		int bytesPending;
-		if (-1 == ioctl(inotifyHandle, FIONREAD, & bytesPending))
+		if (-1 == ioctl(inotifyHandle, FIONREAD, &bytesPending))
 		{
 			emit error("Trouble reading inotify info: " + QString(strerror(errno)));
 			++errorCnt;
 			continue;
 		}
-		if (bytesPending == 0)
+		if (bytesPending < 0 || (size_t)bytesPending < EVENT_SIZE)
 		{
 			// No data to read, so let's not bother
-			if (++timeSlept < MAX_POLL_ERRORS)
+			if (++timeSlept < MAX_POLL_ERRORS && inotifyHandle != INVALID_HANDLE)
 			{
 				sleep(timeSlept);
 			}
@@ -122,8 +192,7 @@ void LinuxWatcher::poll()
 		for(int i = 0; i < buffer.size(); i += EVENT_SIZE + event->len)
 		{
 			event = (struct inotify_event*)(buffer.data() + i);
-			Q_ASSERT(i + event->len <= buffer.size());
-			Q_ASSERT(handles.contains(event->wd));
+			Q_ASSERT((size_t)i + event->len <= (size_t)buffer.size());
 
 			QString filepath;
 
@@ -131,18 +200,49 @@ void LinuxWatcher::poll()
 				QString eventBasePath = handles.value(event->wd);
 				QString eventPath = getName(event);
 	
-				if (QFileInfo(eventBasePath).isDir())
+				if (QFileInfo(eventBasePath).isDir() || QFileInfo(eventBasePath).exists() == false)
 				{
 					filepath = QDir(eventBasePath).absoluteFilePath(eventPath);
 				}
 				else
 				{
-					Q_ASSERT(eventPath.isEmpty());
+					if (!eventPath.isEmpty())
+					{
+						qDebug() << eventPath << " should be empty because event was generated for file " << eventBasePath;
+						Q_ASSERT(false);
+					}
 					filepath = eventBasePath;
 				}
 			}
 
 			Q_ASSERT(!filepath.isEmpty());
+
+			if (handles.contains(event->wd) && 
+				QFileInfo(handles.value(event->wd)).exists() == false)
+			{
+				// watch was removed from out of under us without us expecting it.
+				// we'll now wait for the delete self event, filtering out all other events
+				// that may have been cause by recursive watches.
+				if (BIT_SET(event->mask, IN_DELETE_SELF))
+				{
+					// ignore all other events
+					event->mask = IN_DELETE_SELF;
+				}
+				else
+				{
+					continue;
+				}
+			}
+
+#ifdef _DEBUG
+			if (!handles.contains(event->wd))
+			{
+				qDebug() << "Received event " << eventsToString(event);
+				Q_ASSERT(false);
+			}
+#else
+			Q_ASSERT(handles.contains(event->wd));
+#endif /* _DEBUG */
 
 			QList<int> handledEvents;
 
@@ -151,7 +251,23 @@ void LinuxWatcher::poll()
 				emit newChild(filepath);
 
 				// Now we need to handle the recursive case
+#ifdef _DEBUG
+				QString gotPath = QFileInfo(filepath).canonicalPath();
+				QString watching = QFileInfo(handles.value(event->wd)).canonicalPath();
+
+				if (gotPath == watching)
+				{
+					qDebug() << "Child: " << filepath << " ==> " << gotPath;
+					qDebug() << "Watch handle = " << watching;
+					qFatal("Not sure - something to do with recursive watches");
+				}
+				else
+				{
+					Q_ASSERT(QFileInfo(filepath).canonicalPath() != QFileInfo(handles.value(event->wd)).canonicalPath());
+				}
+#else
 				Q_ASSERT(QFileInfo(filepath).canonicalPath() != QFileInfo(handles.value(event->wd)).canonicalPath());
+#endif /* _DEBUG */
 				
 				// if something unexpected happens and for some reason
 				// we get a create event for the directory we're watching,
@@ -172,18 +288,36 @@ void LinuxWatcher::poll()
 			}
 			if (BIT_SET(event->mask, IN_DELETE))
 			{
-				emit moved(filepath);
-			}
-			if (BIT_SET(event->mask, IN_DELETE_SELF))
-			{
+				Q_ASSERT(!BIT_SET(event->mask, IN_DELETE_SELF));
 				emit deleted(filepath);
-				// if we've moved, then we should remove ourselves from
+			}
+			else if (BIT_SET(event->mask, IN_DELETE_SELF))
+			{
+				Q_ASSERT(!BIT_SET(event->mask, IN_DELETE));
+				// if we've been deleted, then we should remove ourselves from
 				// any watches
+#ifdef _DEBUG
+				if (!hasWatch(filepath))
+				{
+					qDebug() << "Don't have watch for " << filepath << " anymore";
+					Q_ASSERT(false);
+				}
+#else
 				Q_ASSERT(hasWatch(filepath));
+#endif /* _DEBUG */
 				int watchID = handles.key(filepath);
 				Q_ASSERT(recursiveWatch.value(filepath) != NULL);
 				bool removed = removeWatch(filepath);
-				Q_ASSERT(removed == true);
+#ifdef _DEBUG
+				if (removed == false)
+				{
+					qDebug() << "Unable to remove watch for " << filepath;
+					Q_ASSERT(false);
+				}
+#else
+				Q_ASSERT(removed);
+#endif /* _DEBUG */
+				emit deleted(filepath);
 			}
 			if (BIT_SET(event->mask, IN_MOVE_SELF))
 			{
@@ -241,12 +375,12 @@ void LinuxWatcher::poll()
 
 void LinuxWatcher::stopPolling()
 {
+
 	if (running)
 	{
 		int realHandle;
 
 		QMutexLocker locker(&lock);
-		Q_ASSERT(running == true);
 		Q_ASSERT(inotifyHandle != INVALID_HANDLE);
 
 		realHandle = inotifyHandle;
@@ -259,11 +393,18 @@ void LinuxWatcher::stopPolling()
 		{
 			emit error("Unable to release inotify resources: " + QString(strerror(errno)));
 		}
+
 	}
-	else
+	else if (inotifyHandle != INVALID_HANDLE)
 	{
-		Q_ASSERT(inotifyHandle == INVALID_HANDLE);
+		if (0 != close(inotifyHandle))
+		{
+			emit error("Unable to release inotify resources: " + QString(strerror(errno)));			
+		}
+		inotifyHandle = INVALID_HANDLE;
 	}
+	Q_ASSERT(inotifyHandle == INVALID_HANDLE);
+	Q_ASSERT(running == false);
 }
 
 bool LinuxWatcher::supportsRecursiveWatch() const
@@ -327,6 +468,7 @@ bool LinuxWatcher::addWatch(const QString & path, bool recursive)
 bool LinuxWatcher::removeWatch(const QString & path)
 {
 	QMutexLocker locker(&lock);
+	qDebug() << "Removing watch for " << path;
 	Q_ASSERT(!path.isEmpty());
 	if (path.isEmpty())
 	{
@@ -357,8 +499,13 @@ bool LinuxWatcher::removeWatch(const QString & path)
 
 	if (-1 == inotify_rm_watch(inotifyHandle, watchHandle))
 	{
-		emit error("Error removing watch(" + path + ")");
-		return false;
+		if (QFile::exists(path) || errno != 2)
+		{
+			// we swallow error that are generated from attempting to
+			// remove a watch from a file that has been removed
+			emit error("Error removing watch (" + path + "): (" + QString::number(errno) + ") " + strerror(errno));
+			return false;
+		}
 	}
 
 	emit watchRemoved(path);

@@ -52,6 +52,7 @@ WatcherFactory * WatcherFactory::getInstance(const QString & searchPath)
 			instance = qobject_cast<WatcherFactory *>(loader.instance());
 			if (instance != NULL)
 				return instance;
+			loader.unload();
 		}
 		
 	}
