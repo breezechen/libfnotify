@@ -1,0 +1,1 @@
+qmake.exe "CONFIG += release" "CONFIG -= debug" -tp vc -recursive
