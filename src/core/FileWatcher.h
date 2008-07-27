@@ -53,9 +53,8 @@ protected:
 private slots:
 	void addWatchListener(const QString & path);
 	void removeWatchListener(const QString & path);
-	void selfDestroyListener();
 
-private:
+protected:
 	QList<QString> watches;
 	QMutex watchesLock;
 

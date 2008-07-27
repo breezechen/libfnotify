@@ -13,12 +13,15 @@
 //
 #include <QList>
 #include <QString>
+#include <QPointer>
+#include <QObject>
 
 /**
  * A tree representing the watches currently being held.
  */
-class RecursiveWatch
+class RecursiveWatch : public QObject
 {
+	Q_OBJECT
 public:
 	RecursiveWatch(QString watchPath, RecursiveWatch * parent = NULL);
 	~RecursiveWatch();
@@ -28,9 +31,9 @@ public:
 	bool operator==(const RecursiveWatch & other);
 
 private:
-	RecursiveWatch * parent;
+	QPointer<RecursiveWatch> parent;
 	QString watch;
-	QList<RecursiveWatch *> children;
+	QList<QPointer<RecursiveWatch> > children;
 };
 
 #endif /* RECURSIVE_WATCH_H_ */
