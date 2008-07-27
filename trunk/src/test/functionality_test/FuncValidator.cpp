@@ -20,7 +20,7 @@
 #include <core/WatcherFactory.h>
 #include <core/FileWatcher.h>
 
-#define STEP_DELAY 1000
+#define STEP_DELAY 300
 
 FuncValidator::FuncValidator() : m_toreDown(true), m_watcher(NULL)
 {
@@ -135,7 +135,9 @@ bool FuncValidator::step()
 			break;
 		case 6:
 			fName = "step_6";
-			Q_ASSERT(cwd.exists(fName) == false);
+
+			assertMsg = (cwd.relativeFilePath(fName) + " already exists").toAscii();
+			Q_ASSERT_X(cwd.exists(fName) == false, "functionality validation test 6", assertMsg.data());
 			created = cwd.mkdir(fName);
 			Q_ASSERT(created);
 			m_filesCreated += fName;

@@ -73,13 +73,19 @@ static QStringList eventsToString(struct inotify_event* event)
 
 	static const char* mask_names [] = {
 		"Created", "Deleted", "Deleted self", "Moved self", "Moved", "Modified",
-		"Accessed", "Opened", "Closed", "Event overflow", "Ignored", "Unmounted"
+		"Accessed", "Metadata change", "Opened", "Closed", "Event overflow", "Ignored", "Unmounted"
 	};
 
 	static const size_t NUM_MASKS = sizeof(masks) / sizeof(uint32_t);
+	
+	Q_ASSERT_X(NUM_MASKS == sizeof(mask_names) / sizeof(const char*), 
+		"parsing inotify event",
+		"mismatch between masks tested for and the corresponding event name");
+
+	qDebug() << "Parsing event";
 
 	QStringList result;
-	result += "Inotify event (" + QString::number(event->mask) + ") for " + getChildName(event) + ": ";
+	QString toAdd = "Inotify event (" + QString::number(event->mask) + ") for " + getChildName(event) + ": ";
 
 	QString separator("");
 
@@ -87,9 +93,9 @@ static QStringList eventsToString(struct inotify_event* event)
 	{
 		if (BIT_SET(event->mask, masks[i]))
 		{
-			result += separator;
-			result += mask_names[i];
-			separator = ", ";
+			toAdd += QString(mask_names[i]) + "(" + QString::number(event->mask) + ")";
+			result += toAdd;
+			toAdd = "";
 		}
 	}
 
@@ -97,7 +103,7 @@ static QStringList eventsToString(struct inotify_event* event)
 }
 #endif
 
-LinuxWatcher::LinuxWatcher() : inotifyHandle(INVALID_HANDLE), running(false)
+LinuxWatcher::LinuxWatcher() : inotifyHandle(INVALID_HANDLE), destroyed(false), running(false)
 {
 	if (-1 == (inotifyHandle = inotify_init()))
 	{
@@ -110,10 +116,17 @@ LinuxWatcher::LinuxWatcher() : inotifyHandle(INVALID_HANDLE), running(false)
 		Q_ASSERT(INVALID_HANDLE < 0);
 		throw QString("Unexpected condition - handle should not be negative");
 	}
+
+	//connect(this, SIGNAL(destroyed()), SLOT(selfDestroyListener()));
+
+	qDebug() << "LinuxWatcher constructor finished";
 }
 
 LinuxWatcher::~LinuxWatcher()
 {
+	selfDestroyListener();
+
+	qDebug() << "LinuxWatcher destructor";
 	stopPolling();
 	if (running)
 	{
@@ -123,7 +136,25 @@ LinuxWatcher::~LinuxWatcher()
 	}
 	Q_ASSERT(running == false);
 	Q_ASSERT(inotifyHandle == INVALID_HANDLE);
+
+	qDebug() << "LinuxWatcher destructor";
 }
+
+void LinuxWatcher::selfDestroyListener()
+{
+	Q_ASSERT_X(destroyed != true, "LinuxWatcher tear down", "Can only tear down the file watcher once");
+	destroyed = true;
+
+	qDebug() << "We were destroyed so removing all of our watches";
+	foreach(QString watch, watches)
+	{
+		qDebug() << "Removing watch " << watch;
+		this->removeWatch(watch);
+	}	
+
+	qDebug() << "Finished tearing self down";
+}
+
 
 QString LinuxWatcher::getName(struct inotify_event * event)
 {
@@ -234,12 +265,22 @@ void LinuxWatcher::poll()
 				}
 			}
 
-#ifdef _DEBUG
-			if (!handles.contains(event->wd))
+			if (event->mask == IN_IGNORED)
 			{
-				qDebug() << "Received event " << eventsToString(event);
-				Q_ASSERT(false);
+				// inotify subsystem telling us the watch was removed
+				// TODO: We need to move the removeWatch logic here.  This is a major hack
+				// Look at assumption below
+				return;
 			}
+			// Assuming here that we cannot get watch removed events interleaved with any others - probably
+			// not a safe assumption
+			// TODO: Fix this assumption.
+			Q_ASSERT_X(!BIT_SET(event->mask, IN_IGNORED), 
+				"inotify event poll", "Assumption invalid that watch removed events come on their own");
+#ifdef _DEBUG
+			QString message = "Received unexpected event " + eventsToString(event).join(", ");
+			QByteArray messageStr = message.toAscii();
+			Q_ASSERT_X(handles.contains(event->wd), "inotify event poll", messageStr.data());
 #else
 			Q_ASSERT(handles.contains(event->wd));
 #endif /* _DEBUG */
@@ -381,12 +422,15 @@ void LinuxWatcher::stopPolling()
 		int realHandle;
 
 		QMutexLocker locker(&lock);
+		qDebug() << "Locking to stop polling";
+
 		Q_ASSERT(inotifyHandle != INVALID_HANDLE);
 
 		realHandle = inotifyHandle;
 		inotifyHandle = INVALID_HANDLE;
 		running = false;
 
+		qDebug() << "Unlocking";
 		locker.unlock();
 
 		if (0 != close(realHandle))
@@ -417,6 +461,8 @@ bool LinuxWatcher::addWatch(const QString & path, bool recursive)
 	Q_ASSERT(path != ".." || !recursive);
 
 	QMutexLocker locker(&lock);
+	qDebug() << "Locked for adding watch";
+
 	Q_ASSERT(!path.isEmpty());
 	if (path.isEmpty())
 	{
@@ -450,7 +496,9 @@ bool LinuxWatcher::addWatch(const QString & path, bool recursive)
 		QDir dir(path);
 		foreach(QString child, dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
 		{
+			locker.unlock();
 			addWatch(child, true);
+			locker.relock();
 		}
 	}
 

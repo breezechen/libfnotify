@@ -22,13 +22,21 @@ static QString normalizePath(const QString& path)
 	QString normalizedPath = path;
 	if (normalizedPath.endsWith(QDir::separator()))
 	{
+		// path ends with /
 		normalizedPath = normalizedPath.left(normalizedPath.length() - 1);
 	}
 	else
 	{
-		Q_ASSERT(normalizedPath.at(normalizedPath.length() - 1) != QDir::separator());
+		QByteArray normalizedPathStr = normalizedPath.toAscii();
+		Q_ASSERT_X(normalizedPath.at(normalizedPath.length() - 1) != QDir::separator(),
+			"normalizing path", "should never happen since the above condition should be executed instead");
 		if (normalizedPath.length() > 2)
-		Q_ASSERT(normalizedPath.at(normalizedPath.length() - 2) != QDir::separator());
+		{
+			qDebug() << "Looking for " << QDir::separator() << " in " << normalizedPath;
+			Q_ASSERT_X(normalizedPath.at(normalizedPath.length() - 2) != QDir::separator(),
+				"normalizing path",
+				("not sure what the problem with `" + normalizedPathStr + "' is").data());
+		}
 	}
 #ifdef WIN32
 	normalizedPath = normalizedPath.toLower();
@@ -37,25 +45,19 @@ static QString normalizePath(const QString& path)
 	return normalizedPath;
 }
 
-FileWatcher::FileWatcher()
+FileWatcher::FileWatcher() 
 {
 	connect(this, SIGNAL(watchAdded(QString)), SLOT(addWatchListener(const QString &)));
 	connect(this, SIGNAL(watchRemoved(QString)), SLOT(removeWatchListener(const QString &)));
-	connect(this, SIGNAL(destroyed()), SLOT(selfDestroyListener()));
+
+	qDebug() << "FileWatcher constructor finished";
 }
 
 FileWatcher::~FileWatcher()
 {
-	selfDestroyListener();
 	Q_ASSERT(watches.isEmpty());
-}
 
-void FileWatcher::selfDestroyListener()
-{
-	foreach(QString watch, watches)
-	{
-		this->removeWatch(watch);
-	}	
+	qDebug() << "FileWatcher destructor";
 }
 
 bool FileWatcher::hasWatch(const QString & path) const
@@ -85,7 +87,7 @@ void FileWatcher::removeWatchListener(const QString & path)
 	if (path.isEmpty())
 	{
 		// ignore empty paths
-		Q_ASSERT(false);
+		Q_ASSERT_X(false, "Removing watch", "path cannot be empty");
 		return;
 	}
 	QMutexLocker watcher(&watchesLock);

@@ -112,6 +112,8 @@ private:
 	 */
 	int inotifyHandle;
 
+	bool destroyed;
+
 	/**
 	 * Used to control when we want to completely shut down the inotify system.
 	 */
@@ -129,6 +131,11 @@ private slots:
 	 * TODO: What is this for?  No implementation provided.  Can probably be removed.  Was this meant to be a signal instead?
 	 */
 	void directoryAdded();
+
+	/**
+	 * Cleanup routine.
+	 */
+	void selfDestroyListener();
 };
 
 #endif /* LINUX_WATCHER_H_ */
